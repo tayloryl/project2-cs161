@@ -79,20 +79,85 @@ func bytesToUUID(data []byte) (ret uuid.UUID) {
 // User is the structure definition for a user record.
 type User struct {
 	Username string
-
 	// You can add other fields here if you want...
 	// Note for JSON to marshal/unmarshal, the fields need to
 	// be public (start with a capital letter)
+	PasswordHash []byte // store password as a hash with salt
+	UUID         uuid.UUID
+	Filespace    map[string]File   //keeps track of users files
+	PrivSignKey  userlib.DSSignKey //used for digital signatures
+	EncKey       []byte            //used for encryption
+}
+
+type File struct {
+	UUID     uuid.UUID
+	enc_key  []byte
+	filedata []byte
+}
+
+//Helper function to make plaintext a multiple of block size (16 bytes)
+//Dependin on mode (add, remove) return padded or unpadded data
+func PKCS(data []byte, mode string) (padded_data []byte) {
+
+	if mode == "add" {
+		rem := len(data) % userlib.AESBlockSizeBytes
+		pad_num := userlib.AESBlockSizeBytes - rem
+		pad := make([]byte, len(data)+pad_num)
+
+		for i := 0; i < pad_num; i++ {
+			pad = append(pad, byte(pad_num))
+		}
+
+		// if you needed 3 bytes pad = [333]
+		padded_data = append(data, pad...)
+	}
+
+	return padded_data
 }
 
 // InitUser will be called a single time to initialize a new user.
 func InitUser(username string, password string) (userdataptr *User, err error) {
 	var userdata User
+	var verify_key userlib.DSVerifyKey //for digital signature verification
 	userdataptr = &userdata
 
-	//TODO: This is a toy implementation.
+	//RETURN ERROR IF USERNAME EXISTS, must generate UUID first
+	pw_hash := userlib.Argon2Key([]byte(password), []byte(username), 16)
+	key_gen, _ := userlib.HMACEval(pw_hash, []byte(username))
+	uuid, _ := uuid.FromBytes(key_gen)
+	_, ok := userlib.DatastoreGet(uuid) // shouldnt exist
+
+	if ok {
+		return nil, errors.New("Username already exists")
+	}
+
 	userdata.Username = username
-	//End of toy implementation
+	//password hashing: salt = username
+	userdata.PasswordHash = pw_hash
+	//use hashed password to generate UUID/rest of keys
+	userdata.UUID = uuid
+
+	//generate private signing key
+	userdata.PrivSignKey, verify_key, _ = userlib.DSKeyGen()
+	userlib.KeystoreSet(username, verify_key) // store public RSA key in KeyStore
+	//generate private encryption key
+
+	userdata.EncKey = userlib.Argon2Key(pw_hash, []byte(username), userlib.AESKeySizeBytes)
+	//create filespace for future use
+	userdata.Filespace = make(map[string]File)
+
+	//marshal, generate HMAC + encrypt, and send to datastore
+	user_bytes, _ := json.Marshal(userdata)
+
+	hmac_pw := append(pw_hash, []byte("HMAC")...) // use 3 dots to append two slices together
+	hmac_key := userlib.Argon2Key(hmac_pw, []byte(username), 16)
+
+	enc_IV := userlib.RandomBytes(userlib.AESBlockSizeBytes)
+	enc_data := userlib.SymEnc(userdata.EncKey, enc_IV, PKCS(user_bytes, "add"))
+	ds, _ := userlib.HMACEval(hmac_key, enc_data)
+
+	enc_data_hmac := append(enc_data, ds...)
+	userlib.DatastoreSet(userdata.UUID, enc_data_hmac)
 
 	return &userdata, nil
 }
@@ -108,14 +173,29 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 
 // StoreFile is documented at:
 // https://cs161.org/assets/projects/2/docs/client_api/storefile.html
+/* Stores file persistently for future retrieval. If a user calls StoreFile() on a
+filename that already exists, the content of the existing file is overwritte. No
+need to account for version control. */
 func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 
 	//TODO: This is a toy implementation.
+
 	storageKey, _ := uuid.FromBytes([]byte(filename + userdata.Username)[:16])
 	jsonData, _ := json.Marshal(data)
 	userlib.DatastoreSet(storageKey, jsonData)
+
 	//End of toy implementation
 
+	//digital signatures > HMAC = private signing
+	//public key encryption = use digital signature
+
+	//pad and unpad
+	//create a UUiD, hash it,
+	//2 cases: already exists, doesnt exist : create new file, encrypt using SymEnc and marshal it
+	//pad before encrypting PKES7, retrieve from datastore decrypt all that stuff
+
+	// 3 things in common: get something with uuid, unpad it, demarshal
+	//digital signature = public version of HMAC
 	return
 }
 
@@ -137,9 +217,7 @@ func (userdata *User) LoadFile(filename string) (dataBytes []byte, err error) {
 	}
 	json.Unmarshal(dataJSON, &dataBytes)
 	return dataBytes, nil
-	//End of toy implementation
 
-	return
 }
 
 // ShareFile is documented at:
