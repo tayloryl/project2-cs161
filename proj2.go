@@ -130,8 +130,8 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	//RETURN ERROR IF USERNAME EXISTS, must generate UUID first
 	pw_hash := userlib.Argon2Key([]byte(password), []byte(username), 16)
 	key_gen, _ := userlib.HMACEval(pw_hash, []byte(username))
-	uuid, _ := uuid.FromBytes(key_gen)
-	_, ok := userlib.DatastoreGet(uuid) // shouldnt exist
+	uuid, _ := uuid.FromBytes(key_gen[:16]) // byte slice since HMACEval produces 64 byte HMAC
+	_, ok := userlib.DatastoreGet(uuid)     // shouldnt exist
 
 	if ok {
 		return nil, errors.New("Username already exists")
@@ -182,14 +182,19 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 	//check password is valid
 	pw_hash := userlib.Argon2Key([]byte(password), []byte(username), 16)
 	key_gen, _ := userlib.HMACEval(pw_hash, []byte(username))
-	uuid, _ := uuid.FromBytes(key_gen)          //should generate same UUID if password is same
+	uuid, _ := uuid.FromBytes(key_gen[:16])     //should generate same UUID if password is same
 	user_json, ok := userlib.DatastoreGet(uuid) //retrieve the marshaled user info
-	len_data := len(user_json) - 16
-	just_user := user_json[:len_data] //remove HMAC for later use
 
 	if !ok {
 		return nil, errors.New("Invaild password!")
 	}
+	if len(user_json) < userlib.HashSizeBytes {
+		//automatically return error, file has been changed
+		return nil, errors.New("User data length has changed.")
+	}
+	len_data := len(user_json) - userlib.HashSizeBytes
+
+	just_user := user_json[:len_data] //remove HMAC for later use
 
 	//check integrity through HMAC: remember HMAC appended at end of file (last 16 bytes)
 	mac := user_json[len_data:]

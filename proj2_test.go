@@ -79,6 +79,7 @@ func TestGetUser(t *testing.T) {
 
 	//Datastore tampering: lets change Alice's user struct
 	dataStore := userlib.DatastoreGetMap()
+
 	dataStore[u.UUID] = []byte("Changed Alice's user profile!")
 	_, err = GetUser("alice", "fubar")
 	if err == nil {
