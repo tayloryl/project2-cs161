@@ -83,7 +83,7 @@ type User struct {
 	// Note for JSON to marshal/unmarshal, the fields need to
 	// be public (start with a capital letter)
 	PasswordHash []byte // store password as a hash with salt
-	UUID         uuid.UUID
+	UUID_        uuid.UUID
 	Filespace    map[string]File   //keeps track of users files
 	PrivSignKey  userlib.DSSignKey //used for digital signatures
 	EncKey       []byte            //used for encryption
@@ -103,18 +103,20 @@ func PKCS(data []byte, mode string) (padded_data []byte) {
 	if mode == "add" {
 		rem := len(data) % userlib.AESBlockSizeBytes
 		pad_num = userlib.AESBlockSizeBytes - rem //number to pad by
-		pad := make([]byte, len(data)+pad_num)    //pad array we are appending later
-
+		//pad := make([]byte, pad_num)              //pad array we are appending later
+		padded_data = data[:]
 		for i := 0; i < pad_num; i++ {
-			pad = append(pad, byte(pad_num))
+			//pad = append(pad, byte(pad_num))
+			padded_data = append(padded_data, byte(pad_num))
 		}
 
-		// if you needed 3 bytes pad = [333]
-		padded_data = append(data, pad...)
+		//userlib.DebugMsg("%d", padded_data)
 	} else { //remove padding
 		//last byte is amount of padding there is
 		//ex: d = [1022] means 2 bytes of padding so return d[:2] which is [10]
-		pad_num = int(data[len(data)-1])
+
+		num := len(data) - 1
+		pad_num = len(data) - int(data[num]) //piazza: convert to byte > hex string > int?
 		padded_data = data[:pad_num]
 	}
 
@@ -141,7 +143,7 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	//password hashing: salt = username
 	userdata.PasswordHash = pw_hash
 	//use hashed password to generate UUID/rest of keys
-	userdata.UUID = uuid
+	userdata.UUID_ = uuid
 
 	//generate private signing key
 	userdata.PrivSignKey, verify_key, _ = userlib.DSKeyGen()
@@ -163,7 +165,7 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	ds, _ := userlib.HMACEval(hmac_key, enc_data)
 
 	enc_data_hmac := append(enc_data, ds...) //append HMAC at end of encrypted data
-	userlib.DatastoreSet(userdata.UUID, enc_data_hmac)
+	userlib.DatastoreSet(userdata.UUID_, enc_data_hmac)
 
 	return &userdata, nil
 }
@@ -213,7 +215,9 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 
 	userdata_padded := userlib.SymDec(decKey, just_user)
 	//depad
+
 	userdata_final := PKCS(userdata_padded, "remove")
+	//userlib.DebugMsg("%v\n", userdata_final)
 	err = json.Unmarshal(userdata_final, &userdata)
 
 	if err != nil {

@@ -77,16 +77,33 @@ func TestGetUser(t *testing.T) {
 	}
 	t.Log("Successfully countered wrong password.")
 
-	//Datastore tampering: lets change Alice's user struct
-	dataStore := userlib.DatastoreGetMap()
-
-	dataStore[u.UUID] = []byte("Changed Alice's user profile!")
-	_, err = GetUser("alice", "fubar")
-	if err == nil {
-		t.Error("Validated an invalid login attempt: tampered user data.")
+	alice, err := GetUser("alice", "fubar")
+	if err != nil {
+		t.Error("Failed to get valid user.", err)
 		return
 	}
-	t.Log("Succesfully preserved integrity of user data.")
+	t.Log("Successfully retrieved valid user.")
+
+	//Now check if the user data is the same
+
+	if !reflect.DeepEqual(u, alice) {
+		t.Error("Failed to get user data properly, it is not the same.")
+	}
+	t.Log("Succesfully retrieved correct user data.")
+
+	//Datastore tampering: lets change Alice's user struct
+	_ = userlib.DatastoreGetMap()
+	//cant assume staff user struct has certain fields
+	/*
+		dataStore[u.UUID_] = []byte("Changed Alice's user profile!")
+		_, err = GetUser("alice", "fubar")
+		if err == nil {
+			t.Error("Validated an invalid login attempt: tampered user data.")
+			return
+		}
+		t.Log("Succesfully preserved integrity of user data.")
+	*/
+
 }
 
 func TestStorage(t *testing.T) {
