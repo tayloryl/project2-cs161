@@ -5,7 +5,6 @@ package proj2
 
 import (
 	_ "encoding/hex"
-	_ "encoding/json"
 	_ "errors"
 	"reflect"
 	_ "strconv"
