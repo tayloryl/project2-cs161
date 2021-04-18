@@ -49,8 +49,43 @@ func TestInit(t *testing.T) {
 		t.Error("User already exists", err)
 		return
 	}
-	t.Log("Errored correctly at duplicate user.")
+	t.Log("Successfully handled duplicate user.")
 
+}
+
+func TestGetUser(t *testing.T) {
+	clear()
+	t.Log("GetUser Test")
+
+	u, err := InitUser("alice", "fubar")
+	if err != nil {
+		t.Error("Failed to initialize user", err)
+		return
+	}
+
+	_, err = GetUser("bob", "fubar")
+	if err == nil {
+		t.Error("Validated invalid login attempt: user does not exist.")
+		return
+	}
+	t.Log("Successfully invalidated wrong password.")
+
+	_, err = GetUser("alice", "wrong")
+	if err == nil {
+		t.Error("Validated invalid login attempt: wrong password.")
+		return
+	}
+	t.Log("Successfully countered wrong password.")
+
+	//Datastore tampering: lets change Alice's user struct
+	dataStore := userlib.DatastoreGetMap()
+	dataStore[u.UUID] = []byte("Changed Alice's user profile!")
+	_, err = GetUser("alice", "fubar")
+	if err == nil {
+		t.Error("Validated an invalid login attempt: tampered user data.")
+		return
+	}
+	t.Log("Succesfully preserved integrity of user data.")
 }
 
 func TestStorage(t *testing.T) {

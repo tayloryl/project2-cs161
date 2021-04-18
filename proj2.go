@@ -98,11 +98,12 @@ type File struct {
 //Helper function to make plaintext a multiple of block size (16 bytes)
 //Dependin on mode (add, remove) return padded or unpadded data
 func PKCS(data []byte, mode string) (padded_data []byte) {
+	var pad_num int
 
 	if mode == "add" {
 		rem := len(data) % userlib.AESBlockSizeBytes
-		pad_num := userlib.AESBlockSizeBytes - rem
-		pad := make([]byte, len(data)+pad_num)
+		pad_num = userlib.AESBlockSizeBytes - rem //number to pad by
+		pad := make([]byte, len(data)+pad_num)    //pad array we are appending later
 
 		for i := 0; i < pad_num; i++ {
 			pad = append(pad, byte(pad_num))
@@ -110,6 +111,11 @@ func PKCS(data []byte, mode string) (padded_data []byte) {
 
 		// if you needed 3 bytes pad = [333]
 		padded_data = append(data, pad...)
+	} else { //remove padding
+		//last byte is amount of padding there is
+		//ex: d = [1022] means 2 bytes of padding so return d[:2] which is [10]
+		pad_num = int(data[len(data)-1])
+		padded_data = data[:pad_num]
 	}
 
 	return padded_data
@@ -149,14 +155,14 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	//marshal, generate HMAC + encrypt, and send to datastore
 	user_bytes, _ := json.Marshal(userdata)
 
-	hmac_pw := append(pw_hash, []byte("HMAC")...) // use 3 dots to append two slices together
-	hmac_key := userlib.Argon2Key(hmac_pw, []byte(username), 16)
+	hmac_pw := append(pw_hash, []byte("HMAC")...)                // use 3 dots to append two slices together
+	hmac_key := userlib.Argon2Key(hmac_pw, []byte(username), 16) //HMAC is 16 bytes
 
-	enc_IV := userlib.RandomBytes(userlib.AESBlockSizeBytes)
+	enc_IV := userlib.RandomBytes(userlib.AESBlockSizeBytes) //if IV isnt random, not secure
 	enc_data := userlib.SymEnc(userdata.EncKey, enc_IV, PKCS(user_bytes, "add"))
 	ds, _ := userlib.HMACEval(hmac_key, enc_data)
 
-	enc_data_hmac := append(enc_data, ds...)
+	enc_data_hmac := append(enc_data, ds...) //append HMAC at end of encrypted data
 	userlib.DatastoreSet(userdata.UUID, enc_data_hmac)
 
 	return &userdata, nil
@@ -167,6 +173,47 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 func GetUser(username string, password string) (userdataptr *User, err error) {
 	var userdata User
 	userdataptr = &userdata
+	//Assume UNIQUE usernames
+	_, user_exist := userlib.KeystoreGet(username)
+	if !user_exist {
+		return nil, errors.New("User does not exist.")
+	}
+
+	//check password is valid
+	pw_hash := userlib.Argon2Key([]byte(password), []byte(username), 16)
+	key_gen, _ := userlib.HMACEval(pw_hash, []byte(username))
+	uuid, _ := uuid.FromBytes(key_gen)          //should generate same UUID if password is same
+	user_json, ok := userlib.DatastoreGet(uuid) //retrieve the marshaled user info
+	len_data := len(user_json) - 16
+	just_user := user_json[:len_data] //remove HMAC for later use
+
+	if !ok {
+		return nil, errors.New("Invaild password!")
+	}
+
+	//check integrity through HMAC: remember HMAC appended at end of file (last 16 bytes)
+	mac := user_json[len_data:]
+
+	//compute mac to set equal, remember IV = first block of ciphertext
+	hmac_pw := append(pw_hash, []byte("HMAC")...)                // use 3 dots to append two slices together
+	hmac_key := userlib.Argon2Key(hmac_pw, []byte(username), 16) //HMAC is 16 bytes
+	correct_mac, _ := userlib.HMACEval(hmac_key, just_user)
+
+	if !userlib.HMACEqual(correct_mac, mac) {
+		return nil, errors.New("User has been compromised.")
+	}
+
+	//if no errors, return user! depad, decrypt and then unmarshal
+	decKey := userlib.Argon2Key(pw_hash, []byte(username), userlib.AESKeySizeBytes)
+
+	userdata_padded := userlib.SymDec(decKey, just_user)
+	//depad
+	userdata_final := PKCS(userdata_padded, "remove")
+	err = json.Unmarshal(userdata_final, &userdata)
+
+	if err != nil {
+		return nil, errors.New("Error unmarshaling data.")
+	}
 
 	return userdataptr, nil
 }
