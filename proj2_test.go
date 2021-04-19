@@ -105,7 +105,7 @@ func TestGetUser(t *testing.T) {
 
 }
 
-func TestStorage(t *testing.T) {
+func TestStorageAppend(t *testing.T) {
 	clear()
 	u, err := InitUser("alice", "fubar")
 	if err != nil {
@@ -115,6 +115,19 @@ func TestStorage(t *testing.T) {
 
 	v := []byte("This is a test")
 	u.StoreFile("file1", v)
+
+	err_append := u.AppendFile("file1", []byte("Second file"))
+	if err_append != nil {
+		t.Error("Failed to append file", err_append)
+		return
+	}
+	t.Log("Succesfully appended file.")
+
+	err_append2 := u.AppendFile("file2", []byte("No file to append to."))
+	if err_append2 == nil {
+		t.Error("Did not error when file was not found.")
+	}
+	t.Log("Succesfully countered non-existent file.")
 
 	v2, err2 := u.LoadFile("file1")
 	if err2 != nil {

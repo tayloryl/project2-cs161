@@ -85,22 +85,23 @@ type User struct {
 	PasswordHash []byte // store password as a hash with salt
 	UUID_        uuid.UUID
 	Filespace    map[string]FileKey //keeps track of users files
-	PrivSignKey  userlib.DSSignKey  //used for digital signatures
+	PrivSignKey  userlib.DSSignKey  //used for RSA
 	EncKey       []byte             //used for encryption
+	HMACKey      []byte             //used for digital signatures
 }
 
 type FileKey struct { //accesses all components of a related file
-	keyId uuid.UUID //generate hashed UUID, use HKDF later to generate UUIDs for related files
+	KeyId uuid.UUID //generate hashed UUID, use HKDF later to generate UUIDs for related files
 	//owner    []byte
-	enc_key  []byte //encryption key for all file elements
-	hmac_key []byte //hmac key to generate hmac tags for each file elem
-	numFiles int    //number of appends
+	Enc_key  []byte //encryption key for all file elements
+	HMAC_key []byte //hmac key to generate hmac tags for each file elem
+	NumFiles int    //number of appends
 }
 
 type FileElem struct {
-	fileID   uuid.UUID // generate from fileKey UUID
-	filedata []byte
-	file_ind int //0-indexed, represents number of file in file contents
+	FileID   uuid.UUID // generate from fileKey UUID
+	Filedata []byte
+	File_ind int //0-indexed, represents number of file in file contents
 }
 
 //Helper function to make plaintext a multiple of block size (16 bytes)
@@ -169,6 +170,7 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 
 	hmac_pw := append([]byte(password), []byte("mac")...)
 	hmac_key := userlib.Argon2Key(hmac_pw, []byte(username), 16)
+	userdata.HMACKey = hmac_key
 
 	enc_IV := userlib.RandomBytes(userlib.AESBlockSizeBytes) //if IV isnt random, not secure
 	enc_data := userlib.SymEnc(userdata.EncKey, enc_IV, PKCS(user_bytes, "add"))
@@ -258,39 +260,47 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 		//create new file
 		//creating the UUID for the FileKey
 		storageKey := userlib.RandomBytes(16)
-		fileKey.keyId, _ = uuid.FromBytes(storageKey)
+		fileKey.KeyId, _ = uuid.FromBytes(storageKey)
 
 		enc_key, _ := userlib.HashKDF(storageKey, []byte("encryption"))
-		fileKey.enc_key = enc_key[:16]
+		fileKey.Enc_key = enc_key[:16]
 		hmac_key, _ := userlib.HashKDF(storageKey, []byte("mac"))
-		fileKey.hmac_key = hmac_key[:16]
-		fileKey.numFiles = 1
+		fileKey.HMAC_key = hmac_key[:16]
+		fileKey.NumFiles = 1
+
 		//add to users file space
 		userdata.Filespace[filename] = fileKey
 
 		//now generate first file element
-		fileElem.file_ind = 0
-		key_msg := filename + strconv.Itoa(fileElem.file_ind)
-		key_bytes, _ := userlib.HMACEval(fileKey.hmac_key, []byte(key_msg))
-		fileElem.fileID, _ = uuid.FromBytes(key_bytes[:16]) //new file ID based on file index and original fileKey
-		fileElem.filedata = data
+		fileElem.File_ind = 0
+		key_msg := filename + strconv.Itoa(fileElem.File_ind)
+		key_bytes, _ := userlib.HMACEval(fileKey.HMAC_key, []byte(key_msg))
+		fileElem.FileID, _ = uuid.FromBytes(key_bytes[:16]) //new file ID based on file index and original fileKey
+		fileElem.Filedata = data
 
-		//now encrypt the FileKey, FileElem, add HMACs, and send to datastore
+		//now encrypt the FileKey, FileElem, and userData add HMACs, and send to datastore
 		fk_marshal, _ := json.Marshal(fileKey)
 		fe_marshal, _ := json.Marshal(fileElem)
+		user_marshal, _ := json.Marshal(userdata)
 
 		fk_IV := userlib.RandomBytes(userlib.AESBlockSizeBytes) //if IV isnt random, not secure
 		fe_IV := userlib.RandomBytes(userlib.AESBlockSizeBytes)
-		enc_fileKey := userlib.SymEnc(fileKey.enc_key, fk_IV, PKCS(fk_marshal, "add"))
-		enc_fileElem := userlib.SymEnc(fileKey.enc_key, fe_IV, PKCS(fe_marshal, "add"))
+		user_IV := userlib.RandomBytes(userlib.AESBlockSizeBytes) //random IV each time
 
-		fk_hmac, _ := userlib.HMACEval(fileKey.hmac_key, enc_fileKey)
-		fe_hmac, _ := userlib.HMACEval(fileKey.hmac_key, enc_fileElem)
+		enc_fileKey := userlib.SymEnc(fileKey.Enc_key, fk_IV, PKCS(fk_marshal, "add"))
+		enc_fileElem := userlib.SymEnc(fileKey.Enc_key, fe_IV, PKCS(fe_marshal, "add"))
+		enc_user := userlib.SymEnc(userdata.EncKey, user_IV, PKCS(user_marshal, "add"))
+		fk_hmac, _ := userlib.HMACEval(fileKey.HMAC_key, enc_fileKey)
+		fe_hmac, _ := userlib.HMACEval(fileKey.HMAC_key, enc_fileElem)
+		user_hmac, _ := userlib.HMACEval(userdata.HMACKey, enc_user)
 
 		enc_fileKey = append(enc_fileKey, fk_hmac...)
 		enc_fileElem = append(enc_fileElem, fe_hmac...)
-		userlib.DatastoreSet(fileKey.keyId, enc_fileKey)
-		userlib.DatastoreSet(fileElem.fileID, enc_fileElem)
+		enc_user = append(enc_user, user_hmac...)
+		userlib.DatastoreSet(fileKey.KeyId, enc_fileKey)
+		userlib.DatastoreSet(fileElem.FileID, enc_fileElem)
+		userlib.DatastoreSet(userdata.UUID_, enc_user)
+
 	} else {
 
 	}
@@ -302,7 +312,54 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 // https://cs161.org/assets/projects/2/docs/client_api/appendfile.html
 //cant encrypt/decrypt entire file again, entire file doesnt need to be stored as one thing
 func (userdata *User) AppendFile(filename string, data []byte) (err error) {
-	return
+	//if file DNE return error
+	fileKey, found := userdata.Filespace[filename]
+	fileKeyDS, in_DS := userlib.DatastoreGet(fileKey.KeyId)
+	len_data := len(fileKeyDS) - userlib.HashSizeBytes //used for slicing out HMAC later
+
+	if !found || !in_DS { //if file not in users file space or not found in Datastore, error
+		return errors.New("File does not exist")
+	}
+
+	//need to check that the fileKey struct hasnt been corrupted, but not the last file
+	//dont need to decrypt to do this
+	computedMac, _ := userlib.HMACEval(fileKey.HMAC_key, fileKeyDS[:len_data])
+	if !userlib.HMACEqual(computedMac, fileKeyDS[len_data:]) {
+		return errors.New("File key struct has been tampered with in Datastore.")
+	}
+
+	//generate new file under same FileKey
+	numFiles := fileKey.NumFiles
+	file_ind := numFiles + 1
+	fileKey.NumFiles = file_ind //increment number of files by 1
+
+	keyMsg := filename + strconv.Itoa(file_ind)
+	key_bytes, _ := userlib.HMACEval(fileKey.HMAC_key, []byte(keyMsg))
+	fileID, _ := uuid.FromBytes(key_bytes[:16])
+
+	//populate a new fileElem struct for the append
+	fileElem := FileElem{fileID, data, file_ind}
+	//question: does users Filespace get updated too?
+
+	//Marshal, pad, encrypt, append HMAC and send to Datastore (for updated FileKey and fileElem)
+	fileElem_json, _ := json.Marshal(fileElem)
+	fileKey_json, _ := json.Marshal(fileKey)
+
+	fk_IV := userlib.RandomBytes(userlib.AESBlockSizeBytes)
+	fe_IV := userlib.RandomBytes(userlib.AESBlockSizeBytes)
+	fileElem_enc := userlib.SymEnc(fileKey.Enc_key, fe_IV, PKCS(fileElem_json, "add"))
+	fileKey_enc := userlib.SymEnc(fileKey.Enc_key, fk_IV, PKCS(fileKey_json, "add"))
+
+	//Add HMACs for both file key and file elem struct (runtime corresponds to size of appended file, nothing else)
+	fk_hmac, _ := userlib.HMACEval(fileKey.HMAC_key, fileElem_enc)
+	fe_hmac, _ := userlib.HMACEval(fileKey.HMAC_key, fileKey_enc)
+
+	fileKey_enc = append(fileKey_enc, fk_hmac...)
+	fileElem_enc = append(fileElem_enc, fe_hmac...)
+	userlib.DatastoreSet(fileKey.KeyId, fileKey_enc)
+	userlib.DatastoreSet(fileElem.FileID, fileElem_enc)
+
+	return err
 }
 
 // LoadFile is documented at:
