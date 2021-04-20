@@ -139,6 +139,9 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	var verify_key userlib.DSVerifyKey //for digital signature verification
 	userdataptr = &userdata
 
+	if username == "" || password == "" {
+		return nil, errors.New("Empty username or password")
+	}
 	//RETURN ERROR IF USERNAME EXISTS, must generate UUID first
 	pw_hash := userlib.Argon2Key([]byte(password), []byte(username), 16)
 	key_gen, _ := userlib.HMACEval(pw_hash, []byte(username))
