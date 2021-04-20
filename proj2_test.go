@@ -127,6 +127,7 @@ func TestStorageAppend(t *testing.T) {
 	err_append2 := u.AppendFile("file2", []byte("No file to append to."))
 	if err_append2 == nil {
 		t.Error("Did not error when file was not found.")
+		return
 	}
 	t.Log("Succesfully countered non-existent file.")
 
@@ -206,6 +207,8 @@ func TestShare(t *testing.T) {
 		t.Error("Failed to share the a file", err)
 		return
 	}
+
+	//ok so bob can rename any received file he gets
 	err = u2.ReceiveFile("file2", "alice", accessToken)
 	if err != nil {
 		t.Error("Failed to receive the share message", err)
@@ -217,8 +220,90 @@ func TestShare(t *testing.T) {
 		t.Error("Failed to download the file after sharing", err)
 		return
 	}
+
 	if !reflect.DeepEqual(v, v2) {
 		t.Error("Shared file is not the same", v, v2)
 		return
 	}
+}
+
+func TestExample1(t *testing.T) {
+	clear()
+	//using example from spec
+	f1 := []byte("content")
+	f2 := []byte("different content")
+
+	// Alice and Bob each start a users session by authenticating to the client.
+	alice_session_1, _ := InitUser("user_alice", "password1")
+	bob_session_1, _ := InitUser("user_bob", "password2")
+
+	// Alice stores byte slice f1 with name "filename" and Bob stores byte slice
+	// f2 also with name "filename".
+	alice_session_1.StoreFile("filename", f1)
+	bob_session_1.StoreFile("filename", f2)
+
+	// Alice and Bob each confirm that they can load the file they previously
+	// stored and that the file contents is the same.
+
+	f1_loaded, _ := alice_session_1.LoadFile("filename")
+	f2_loaded, _ := bob_session_1.LoadFile("filename")
+
+	if !reflect.DeepEqual(f1, f1_loaded) {
+		t.Error("file contents are different.")
+		return
+	}
+
+	if !reflect.DeepEqual(f2, f2_loaded) {
+		t.Error("file contents are different.")
+		return
+	}
+
+	// Bob creates a second user session by authenticating to the client again.
+	bob_session_2, _ := GetUser("user_bob", "password2")
+
+	// Bob stores byte slice f2 with name "newfile" using his second user
+	// session.
+	bob_session_2.StoreFile("newfile", f2)
+
+	// Bob loads "newfile" using his first user session. Notice that Bob does
+	// not need to reauthenticate. File changes must be available to all active
+	// sessions for a given user.
+
+	f2_newfile, err := bob_session_1.LoadFile("newfile")
+	if err != nil {
+		t.Error("could not load file", err)
+	}
+
+	if !reflect.DeepEqual(f2, f2_newfile) {
+		t.Error("file contents are different")
+	}
+}
+
+func TestExample2(t *testing.T) {
+	clear()
+	u1, _ := InitUser("user_alice", "password1")
+	u2, _ := InitUser("user_bob", "password2")
+
+	f1 := []byte("content")
+
+	u1.StoreFile("file_to_share_with_Bob", f1)
+	accessToken, err := u1.ShareFile("file_to_share_with_Bob", "user_bob")
+
+	if err != nil {
+		t.Error("could not share file", err)
+		return
+	}
+
+	u2.ReceiveFile("the_file_from_alice", "user_alice", accessToken)
+	f2, err := u2.LoadFile("the_file_from_alice")
+	if err != nil {
+		t.Error("could not load file from alice")
+		return
+	}
+
+	if !reflect.DeepEqual(f1, f2) {
+		t.Error("f1 and f2 are not the same")
+		return
+	}
+	// f1 should be the same as f2
 }

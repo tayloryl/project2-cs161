@@ -192,7 +192,9 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 	var userdata User
 	userdataptr = &userdata
 	//Assume UNIQUE usernames
-	_, user_exist := userlib.KeystoreGet(username)
+
+	//verifies there is a user to begin with since KeyStore is secure
+	_, user_exist := userlib.KeystoreGet(username + "ds")
 	if !user_exist {
 		return nil, errors.New("User does not exist.")
 	}
@@ -205,7 +207,7 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 	user_json, ok := userlib.DatastoreGet(uuid) //retrieve the marshaled user info
 
 	if !ok {
-		return nil, errors.New("Invaild password!")
+		return nil, errors.New("Invalid password!")
 	}
 	if len(user_json) < userlib.HashSizeBytes {
 		//automatically return error, file has been changed
@@ -242,6 +244,40 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 	return userdataptr, nil
 }
 
+//Helper function to support multple sessions. Can get user with current user struct
+//basically same as getUser just skips some checks
+func GetLatestUser(uuid uuid.UUID, pw_hash []byte, hmac_key []byte, decKey []byte) (userdataptr *User, err error) {
+	var userdata User
+	userdataptr = &userdata
+
+	user_json, _ := userlib.DatastoreGet(uuid) //retrieve the marshaled user info
+	//just need to check integrity of user struct
+	if len(user_json) < userlib.HashSizeBytes {
+		//automatically return error, file has been changed
+		return nil, errors.New("User data length has changed.")
+	}
+	len_data := len(user_json) - userlib.HashSizeBytes
+	just_user := user_json[:len_data] //remove HMAC for later use
+	mac := user_json[len_data:]
+
+	//compute mac to set equal
+	correct_mac, _ := userlib.HMACEval(hmac_key, just_user)
+	if !userlib.HMACEqual(correct_mac, mac) {
+		return nil, errors.New("User has been compromised.")
+	}
+
+	//if no errors, return user! depad, decrypt and then unmarshal
+	userdata_padded := userlib.SymDec(decKey, just_user)
+	userdata_final := PKCS(userdata_padded, "remove")
+
+	err = json.Unmarshal(userdata_final, &userdata)
+	if err != nil {
+		return nil, errors.New("Error unmarshaling data.")
+	}
+
+	return userdataptr, nil
+}
+
 // StoreFile is documented at:
 // https://cs161.org/assets/projects/2/docs/client_api/storefile.html
 /* Stores file persistently for future retrieval. If a user calls StoreFile() on a
@@ -258,7 +294,12 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 	*/
 	//End of toy implementation
 	//2 cases: already exists, doesnt exist : create new file, encrypt using SymEnc and marshal it
-	fileKey, exists := userdata.Filespace[filename]
+	updatedUser, err := GetLatestUser(userdata.UUID_, userdata.PasswordHash, userdata.HMACKey, userdata.EncKey)
+	if err != nil {
+		return errors.New("Failed to retrieve latest user info.")
+	}
+
+	fileKey, exists := updatedUser.Filespace[filename]
 	if !exists {
 		//create new file
 		//creating the UUID for the FileKey
@@ -272,11 +313,12 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 		fileKey.NumFiles = 1
 
 		//add to users file space
-		userdata.Filespace[filename] = fileKey
+		updatedUser.Filespace[filename] = fileKey
 
 		//now generate first file element
 		fileElem.File_ind = 1
-		key_msg := filename + "_" + strconv.Itoa(fileElem.File_ind)
+		//had to change key_msg (dont include filename since when sharing, other users can rename it)
+		key_msg := fileKey.KeyId.String() + "_" + strconv.Itoa(fileElem.File_ind)
 		key_bytes, _ := userlib.HMACEval(fileKey.HMAC_key, []byte(key_msg))
 		fileElem.FileID, _ = uuid.FromBytes(key_bytes[:16]) //new file ID based on file index and original fileKey
 		fileElem.Filedata = data
@@ -285,7 +327,7 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 		//now encrypt the FileKey, FileElem, and userData add HMACs, and send to datastore
 		fk_marshal, _ := json.Marshal(fileKey)
 		fe_marshal, _ := json.Marshal(fileElem)
-		user_marshal, _ := json.Marshal(userdata)
+		user_marshal, _ := json.Marshal(updatedUser)
 
 		fk_IV := userlib.RandomBytes(userlib.AESBlockSizeBytes) //if IV isnt random, not secure
 		fe_IV := userlib.RandomBytes(userlib.AESBlockSizeBytes)
@@ -293,7 +335,7 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 
 		enc_fileKey := userlib.SymEnc(fileKey.Enc_key, fk_IV, PKCS(fk_marshal, "add"))
 		enc_fileElem := userlib.SymEnc(fileKey.Enc_key, fe_IV, PKCS(fe_marshal, "add"))
-		enc_user := userlib.SymEnc(userdata.EncKey, user_IV, PKCS(user_marshal, "add"))
+		enc_user := userlib.SymEnc(updatedUser.EncKey, user_IV, PKCS(user_marshal, "add"))
 		fk_hmac, _ := userlib.HMACEval(fileKey.HMAC_key, enc_fileKey)
 		fe_hmac, _ := userlib.HMACEval(fileKey.HMAC_key, enc_fileElem)
 		user_hmac, _ := userlib.HMACEval(userdata.HMACKey, enc_user)
@@ -317,7 +359,12 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 //cant encrypt/decrypt entire file again, entire file doesnt need to be stored as one thing
 func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 	//if file DNE return error
-	fk, found := userdata.Filespace[filename]
+	updatedUser, err := GetLatestUser(userdata.UUID_, userdata.PasswordHash, userdata.HMACKey, userdata.EncKey)
+	if err != nil {
+		return errors.New("Failed to retrieve latest user info.")
+	}
+
+	fk, found := updatedUser.Filespace[filename]
 	fileKeyDS, in_DS := userlib.DatastoreGet(fk.KeyId)
 	len_data := len(fileKeyDS) - userlib.HashSizeBytes //used for slicing out HMAC later
 
@@ -346,7 +393,7 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 	file_ind := numFiles + 1
 	fileKey.NumFiles = file_ind //increment number of files by 1
 
-	keyMsg := filename + "_" + strconv.Itoa(file_ind)
+	keyMsg := fileKey.KeyId.String() + "_" + strconv.Itoa(file_ind)
 	key_bytes, _ := userlib.HMACEval(fileKey.HMAC_key, []byte(keyMsg))
 	fileID, _ := uuid.FromBytes(key_bytes[:16])
 
@@ -389,13 +436,22 @@ func (userdata *User) LoadFile(filename string) (dataBytes []byte, err error) {
 		json.Unmarshal(dataJSON, &dataBytes)
 	*/
 	//if file DNE, return error. retrieve fileKey from Datastore
-	fileKey, found := userdata.Filespace[filename]
-	fileKeyDS, in_DS := userlib.DatastoreGet(fileKey.KeyId)
-	len_data := len(fileKeyDS) - userlib.HashSizeBytes
-
-	if !found || !in_DS {
-		return nil, errors.New("File not found.")
+	updatedUser, err := GetLatestUser(userdata.UUID_, userdata.PasswordHash, userdata.HMACKey, userdata.EncKey)
+	if err != nil {
+		return nil, errors.New("Failed to retrieve latest user info.")
 	}
+	fileKey, found := updatedUser.Filespace[filename]
+
+	if !found {
+		return nil, errors.New("File not found in user's filespace.")
+	}
+
+	fileKeyDS, found2 := userlib.DatastoreGet(fileKey.KeyId)
+	if !found2 {
+		return nil, errors.New("File not found in DataStore.")
+	}
+
+	len_data := len(fileKeyDS) - userlib.HashSizeBytes
 
 	//verify integrity of both fileKey struct and the file itself
 	computedMac, _ := userlib.HMACEval(fileKey.HMAC_key, fileKeyDS[:len_data])
@@ -416,7 +472,7 @@ func (userdata *User) LoadFile(filename string) (dataBytes []byte, err error) {
 
 	for i := 1; i <= latestFileKey.NumFiles; i++ {
 		//retrieve appropriate fileElem from Datastore, generate correct file ID
-		keyMsg := filename + "_" + strconv.Itoa(i) //i is index of file
+		keyMsg := latestFileKey.KeyId.String() + "_" + strconv.Itoa(i) //i is index of file
 		key_bytes, _ := userlib.HMACEval(latestFileKey.HMAC_key, []byte(keyMsg))
 		fileID, _ := uuid.FromBytes(key_bytes[:16])
 
@@ -456,7 +512,7 @@ func (userdata *User) LoadFile(filename string) (dataBytes []byte, err error) {
 
 //Helper struct for ShareFile. The record users send to DataStore when securely sharing a file
 type ShareInvite struct {
-	Signature  userlib.DSSignKey
+	Signature  []byte
 	RSAFileKey []byte
 }
 
@@ -477,7 +533,11 @@ func (userdata *User) ShareFile(filename string, recipient string) (
 	var shareInvite ShareInvite
 	var fileKeyMeta FileKeyMeta
 	//check is file exists in users file space
-	fk, fileFound := userdata.Filespace[filename]
+	updatedUser, err := GetLatestUser(userdata.UUID_, userdata.PasswordHash, userdata.HMACKey, userdata.EncKey)
+	if err != nil {
+		return uuid.Nil, errors.New("Failed to retrieve latest user info.")
+	}
+	fk, fileFound := updatedUser.Filespace[filename]
 
 	if !fileFound {
 		return uuid.Nil, errors.New("File does not exist in caller's personal filespace.")
@@ -489,16 +549,19 @@ func (userdata *User) ShareFile(filename string, recipient string) (
 	}
 
 	//populate Shareinvite and FileKeyMeta struct
-	shareInvite.Signature = userdata.PrivSignKey
+
 	fileKeyMeta.DSid = fk.KeyId
 	fileKeyMeta.HMACkey = fk.HMAC_key
 	fileKeyMeta.ENCkey = fk.Enc_key
 
 	fkm_json, _ := json.Marshal(fileKeyMeta)
-
 	//encrypt FileKeyMeta using RSA
 	fileKeyMeta_enc, _ := userlib.PKEEnc(pubKey, fkm_json) //dont need to pad?
+
+	//Marshal the fileKeyMeta info
 	shareInvite.RSAFileKey = fileKeyMeta_enc
+	//msg for signature is the RSA encrypted, MARSHALED FileMetaKey struct
+	shareInvite.Signature, _ = userlib.DSSign(userdata.PrivSignKey, shareInvite.RSAFileKey)
 	shareInvite_json, _ := json.Marshal(shareInvite)
 
 	accessToken = uuid.New() //generate random accessToken
@@ -509,8 +572,90 @@ func (userdata *User) ShareFile(filename string, recipient string) (
 
 // ReceiveFile is documented at:
 // https://cs161.org/assets/projects/2/docs/client_api/receivefile.html
+//Adds a file that was shared w caller to personal namespace
 func (userdata *User) ReceiveFile(filename string, sender string,
 	accessToken uuid.UUID) error {
+
+	//CHECK FOR ACCESS REVOCATION LATER
+	updatedUser, err := GetLatestUser(userdata.UUID_, userdata.PasswordHash, userdata.HMACKey, userdata.EncKey)
+	if err != nil {
+		return errors.New("Failed to retrieve latest user info.")
+	}
+	_, already_received := updatedUser.Filespace[filename]
+
+	if already_received {
+		return errors.New("File already in user's file space.")
+	}
+
+	sharedInviteDS, fileKeyFound := userlib.DatastoreGet(accessToken)
+
+	if !fileKeyFound {
+		return errors.New("Access token did not find a shared file.")
+	}
+
+	var sharedInvite ShareInvite
+	err = json.Unmarshal(sharedInviteDS, &sharedInvite)
+
+	if err != nil {
+		return errors.New("Error unmarshaling shared file key.")
+	}
+
+	//now verify that sharedInvite has not been tampered with
+	senderKey, _ := userlib.KeystoreGet(sender + "ds")
+	err = userlib.DSVerify(senderKey, sharedInvite.RSAFileKey, sharedInvite.Signature)
+
+	if err != nil {
+		return errors.New("Failed to verify sender.")
+	}
+
+	//now we can finally receive the fileKey after unmarshaling
+	//trying to decrypt marshaled RSAFileKey
+	rsaFK_dec, err := userlib.PKEDec(userdata.PrivRSAKey, sharedInvite.RSAFileKey)
+	if err != nil {
+		return errors.New("Failed to decrypt FileKeyMeta info.")
+	}
+
+	var rsaFK FileKeyMeta
+	err = json.Unmarshal(rsaFK_dec, &rsaFK)
+	if err != nil {
+		return errors.New("Error unmarshaling file key metadata.")
+	}
+
+	//now lets retrieve the fileKey from the datastore and append that to our users filespace
+	fileKey, fkFound := userlib.DatastoreGet(rsaFK.DSid)
+
+	if !fkFound {
+		return errors.New("Could not find original file.")
+	}
+
+	//authenticate HMAC, decrypt, depad, demarshal fileKey and add to users filespace
+	len_fk := len(fileKey) - userlib.HashSizeBytes
+
+	computedMac, _ := userlib.HMACEval(rsaFK.HMACkey, fileKey[:len_fk])
+	if !userlib.HMACEqual(computedMac, fileKey[len_fk:]) {
+		return errors.New("File key struct has been tampered with in Datastore.")
+	}
+	//decrypt
+	fileKey_dec := userlib.SymDec(rsaFK.ENCkey, fileKey[:len_fk])
+	fileKey_dec = PKCS(fileKey_dec, "remove")
+	var finalFK FileKey
+	err = json.Unmarshal(fileKey_dec, &finalFK)
+
+	if err != nil {
+		return errors.New("Error unmarshaling actual file key.")
+	}
+	//generate a new fileKey for user! user can name file whatever they want
+
+	//marshal, pad, encrypt, add HMAC and send userdata to DS
+	userdata.Filespace[filename] = finalFK
+	user_json, _ := json.Marshal(userdata)
+	user_IV := userlib.RandomBytes(userlib.AESBlockSizeBytes)
+	user_enc := userlib.SymEnc(userdata.EncKey, user_IV, PKCS(user_json, "add"))
+
+	user_mac, _ := userlib.HMACEval(userdata.HMACKey, user_enc)
+	user_enc = append(user_enc, user_mac...)
+	userlib.DatastoreSet(userdata.UUID_, user_enc)
+
 	return nil
 }
 
