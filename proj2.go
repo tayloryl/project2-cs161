@@ -101,7 +101,7 @@ type FileKey struct { //accesses all components of a related file
 type FileElem struct {
 	FileID   uuid.UUID // generate from fileKey UUID
 	Filedata []byte
-	File_ind int //0-indexed, represents number of file in file contents
+	File_ind int //1-indexed, represents number of file in file contents
 }
 
 //Helper function to make plaintext a multiple of block size (16 bytes)
@@ -164,13 +164,13 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 
 	//create filespace for future use
 	userdata.Filespace = make(map[string]FileKey)
-
-	//marshal, generate HMAC + encrypt, and send to datastore
-	user_bytes, _ := json.Marshal(userdata)
-
+	//need HMAC for later
 	hmac_pw := append([]byte(password), []byte("mac")...)
 	hmac_key := userlib.Argon2Key(hmac_pw, []byte(username), 16)
 	userdata.HMACKey = hmac_key
+
+	//marshal, generate HMAC + encrypt, and send to datastore
+	user_bytes, _ := json.Marshal(userdata)
 
 	enc_IV := userlib.RandomBytes(userlib.AESBlockSizeBytes) //if IV isnt random, not secure
 	enc_data := userlib.SymEnc(userdata.EncKey, enc_IV, PKCS(user_bytes, "add"))
@@ -231,7 +231,6 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 	userdata_final := PKCS(userdata_padded, "remove")
 	//userlib.DebugMsg("%v\n", userdata_final)
 	err = json.Unmarshal(userdata_final, &userdata)
-
 	if err != nil {
 		return nil, errors.New("Error unmarshaling data.")
 	}
@@ -272,11 +271,12 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 		userdata.Filespace[filename] = fileKey
 
 		//now generate first file element
-		fileElem.File_ind = 0
-		key_msg := filename + strconv.Itoa(fileElem.File_ind)
+		fileElem.File_ind = 1
+		key_msg := filename + "_" + strconv.Itoa(fileElem.File_ind)
 		key_bytes, _ := userlib.HMACEval(fileKey.HMAC_key, []byte(key_msg))
 		fileElem.FileID, _ = uuid.FromBytes(key_bytes[:16]) //new file ID based on file index and original fileKey
 		fileElem.Filedata = data
+		//userlib.DebugMsg("%v\n", fileElem.FileID)
 
 		//now encrypt the FileKey, FileElem, and userData add HMACs, and send to datastore
 		fk_marshal, _ := json.Marshal(fileKey)
@@ -313,8 +313,8 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 //cant encrypt/decrypt entire file again, entire file doesnt need to be stored as one thing
 func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 	//if file DNE return error
-	fileKey, found := userdata.Filespace[filename]
-	fileKeyDS, in_DS := userlib.DatastoreGet(fileKey.KeyId)
+	fk, found := userdata.Filespace[filename]
+	fileKeyDS, in_DS := userlib.DatastoreGet(fk.KeyId)
 	len_data := len(fileKeyDS) - userlib.HashSizeBytes //used for slicing out HMAC later
 
 	if !found || !in_DS { //if file not in users file space or not found in Datastore, error
@@ -323,9 +323,18 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 
 	//need to check that the fileKey struct hasnt been corrupted, but not the last file
 	//dont need to decrypt to do this
-	computedMac, _ := userlib.HMACEval(fileKey.HMAC_key, fileKeyDS[:len_data])
+	computedMac, _ := userlib.HMACEval(fk.HMAC_key, fileKeyDS[:len_data])
 	if !userlib.HMACEqual(computedMac, fileKeyDS[len_data:]) {
-		return errors.New("File key struct has been tampered with in Datastore.")
+		return errors.New("File key has been tampered with in Datastore.")
+	}
+
+	//decrypt + depad fileKey from DS to current fileKey var (overwrite)
+	decrypt := userlib.SymDec(fk.Enc_key, fileKeyDS[:len_data])
+	decrypt = PKCS(decrypt, "remove")
+	var fileKey FileKey
+	err = json.Unmarshal(decrypt, &fileKey)
+	if err != nil {
+		return errors.New("Error demarshaling.")
 	}
 
 	//generate new file under same FileKey
@@ -333,13 +342,13 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 	file_ind := numFiles + 1
 	fileKey.NumFiles = file_ind //increment number of files by 1
 
-	keyMsg := filename + strconv.Itoa(file_ind)
+	keyMsg := filename + "_" + strconv.Itoa(file_ind)
 	key_bytes, _ := userlib.HMACEval(fileKey.HMAC_key, []byte(keyMsg))
 	fileID, _ := uuid.FromBytes(key_bytes[:16])
 
 	//populate a new fileElem struct for the append
 	fileElem := FileElem{fileID, data, file_ind}
-	//question: does users Filespace get updated too?
+	//question: does users Filespace get updated too automatically?
 
 	//Marshal, pad, encrypt, append HMAC and send to Datastore (for updated FileKey and fileElem)
 	fileElem_json, _ := json.Marshal(fileElem)
@@ -351,8 +360,8 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 	fileKey_enc := userlib.SymEnc(fileKey.Enc_key, fk_IV, PKCS(fileKey_json, "add"))
 
 	//Add HMACs for both file key and file elem struct (runtime corresponds to size of appended file, nothing else)
-	fk_hmac, _ := userlib.HMACEval(fileKey.HMAC_key, fileElem_enc)
-	fe_hmac, _ := userlib.HMACEval(fileKey.HMAC_key, fileKey_enc)
+	fk_hmac, _ := userlib.HMACEval(fileKey.HMAC_key, fileKey_enc)
+	fe_hmac, _ := userlib.HMACEval(fileKey.HMAC_key, fileElem_enc)
 
 	fileKey_enc = append(fileKey_enc, fk_hmac...)
 	fileElem_enc = append(fileElem_enc, fe_hmac...)
@@ -367,14 +376,71 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 func (userdata *User) LoadFile(filename string) (dataBytes []byte, err error) {
 
 	//TODO: This is a toy implementation.
-	storageKey, _ := uuid.FromBytes([]byte(filename + userdata.Username)[:16])
-	dataJSON, ok := userlib.DatastoreGet(storageKey)
-	if !ok {
-		return nil, errors.New(strings.ToTitle("File not found!"))
-	}
-	json.Unmarshal(dataJSON, &dataBytes)
-	return dataBytes, nil
+	/*
+		storageKey, _ := uuid.FromBytes([]byte(filename + userdata.Username)[:16])
+		dataJSON, ok := userlib.DatastoreGet(storageKey)
+		if !ok {
+			return nil, errors.New(strings.ToTitle("File not found!"))
+		}
+		json.Unmarshal(dataJSON, &dataBytes)
+	*/
+	//if file DNE, return error. retrieve fileKey from Datastore
+	fileKey, found := userdata.Filespace[filename]
+	fileKeyDS, in_DS := userlib.DatastoreGet(fileKey.KeyId)
+	len_data := len(fileKeyDS) - userlib.HashSizeBytes
 
+	if !found || !in_DS {
+		return nil, errors.New("File not found.")
+	}
+
+	//verify integrity of both fileKey struct and the file itself
+	computedMac, _ := userlib.HMACEval(fileKey.HMAC_key, fileKeyDS[:len_data])
+	if !userlib.HMACEqual(computedMac, fileKeyDS[len_data:]) {
+		return nil, errors.New("File key struct has been tampered with in Datastore.")
+	}
+
+	//decrypt fileKey in datastore to get latest version
+	//decrypt > depad > unmarshal
+	fileKey_pad := userlib.SymDec(fileKey.Enc_key, fileKeyDS[:len_data])
+	fileKey_decrypt := PKCS(fileKey_pad, "remove")
+	var latestFileKey FileKey
+	err = json.Unmarshal(fileKey_decrypt, &latestFileKey) //set current fileKey to latest
+
+	//now that we know fileKey is ok and we have the latest version,
+	//check integrity of each file in file append
+	var filePart []byte //this is the retrieved file elements DATA field
+
+	for i := 1; i <= latestFileKey.NumFiles; i++ {
+		//retrieve appropriate fileElem from Datastore, generate correct file ID
+		keyMsg := filename + "_" + strconv.Itoa(i) //i is index of file
+		key_bytes, _ := userlib.HMACEval(latestFileKey.HMAC_key, []byte(keyMsg))
+		fileID, _ := uuid.FromBytes(key_bytes[:16])
+
+		file_enc, err := userlib.DatastoreGet(fileID)
+		len_file := len(file_enc) - userlib.HashSizeBytes
+
+		if !err {
+			error_msg := "File part not found: " + keyMsg
+			return nil, errors.New(error_msg)
+		}
+
+		//decrypt, depad, demarshal, and extract data field
+		file_dec := userlib.SymDec(latestFileKey.Enc_key, file_enc[:len_file])
+		file_dec = PKCS(file_dec, "remove")
+		var file_demarsh FileElem
+		err2 := json.Unmarshal(file_dec, &file_demarsh)
+
+		if err2 != nil {
+			error_msg := "Error unmarshaling this file part: " + keyMsg
+			return nil, errors.New(error_msg)
+		}
+
+		//finally we have the unmarshaled file struct, set filePart to the data
+		filePart = file_demarsh.Filedata
+		dataBytes = append(dataBytes, filePart...)
+	}
+
+	return dataBytes, nil
 }
 
 // ShareFile is documented at:

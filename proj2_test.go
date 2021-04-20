@@ -87,6 +87,7 @@ func TestGetUser(t *testing.T) {
 
 	if !reflect.DeepEqual(u, alice) {
 		t.Error("Failed to get user data properly, it is not the same.")
+		return
 	}
 	t.Log("Succesfully retrieved correct user data.")
 
@@ -129,15 +130,35 @@ func TestStorageAppend(t *testing.T) {
 	}
 	t.Log("Succesfully countered non-existent file.")
 
+	v = append(v, []byte("Second file")...) //update v since we apended file
+
 	v2, err2 := u.LoadFile("file1")
 	if err2 != nil {
 		t.Error("Failed to upload and download", err2)
 		return
 	}
+	t.Log("Succesfully uploaded and downloaded file.")
 	if !reflect.DeepEqual(v, v2) {
 		t.Error("Downloaded file is not the same", v, v2)
 		return
 	}
+	t.Log("Success: downloaded file is the same!")
+}
+
+func TestSingleUserAppend(t *testing.T) {
+	clear()
+	// taken from public ag tests
+	file1data := []byte("File 1 data woohoo")
+	file1dataAppend1 := []byte(" here is more yeet")
+	file1dataAppend2 := []byte(" and even more!!")
+
+	u, _ := InitUser("nick", "weaver")
+	u.StoreFile("file1", file1data)
+	u.AppendFile("file1", file1dataAppend1)
+	u.AppendFile("file1", file1dataAppend2)
+
+	t.Log("Succesfully appended two files.")
+
 }
 
 func TestInvalidFile(t *testing.T) {
