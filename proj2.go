@@ -76,34 +76,6 @@ func bytesToUUID(data []byte) (ret uuid.UUID) {
 	return
 }
 
-// User is the structure definition for a user record.
-type User struct {
-	Username string
-	// You can add other fields here if you want...
-	// Note for JSON to marshal/unmarshal, the fields need to
-	// be public (start with a capital letter)
-	PasswordHash []byte // store password as a hash with salt
-	UUID_        uuid.UUID
-	Filespace    map[string]FileKey //keeps track of users files
-	PrivSignKey  userlib.DSSignKey  //used for RSA
-	EncKey       []byte             //used for encryption
-	HMACKey      []byte             //used for digital signatures
-}
-
-type FileKey struct { //accesses all components of a related file
-	KeyId uuid.UUID //generate hashed UUID, use HKDF later to generate UUIDs for related files
-	//owner    []byte
-	Enc_key  []byte //encryption key for all file elements
-	HMAC_key []byte //hmac key to generate hmac tags for each file elem
-	NumFiles int    //number of appends
-}
-
-type FileElem struct {
-	FileID   uuid.UUID // generate from fileKey UUID
-	Filedata []byte
-	File_ind int //1-indexed, represents number of file in file contents
-}
-
 //Helper function to make plaintext a multiple of block size (16 bytes)
 //Dependin on mode (add, remove) return padded or unpadded data
 func PKCS(data []byte, mode string) (padded_data []byte) {
@@ -132,6 +104,35 @@ func PKCS(data []byte, mode string) (padded_data []byte) {
 	return padded_data
 }
 
+// User is the structure definition for a user record.
+type User struct {
+	Username string
+	// You can add other fields here if you want...
+	// Note for JSON to marshal/unmarshal, the fields need to
+	// be public (start with a capital letter)
+	PasswordHash []byte // store password as a hash with salt
+	UUID_        uuid.UUID
+	Filespace    map[string]FileKey //keeps track of users files
+	PrivRSAKey   userlib.PKEDecKey  //used for shareFile
+	PrivSignKey  userlib.DSSignKey  //used for RSA signature
+	EncKey       []byte             //used for encryption
+	HMACKey      []byte             //used for validating files
+}
+
+type FileKey struct { //accesses all components of a related file
+	KeyId uuid.UUID //generate hashed UUID, use HKDF later to generate UUIDs for related files
+	//owner    []byte
+	Enc_key  []byte //encryption key for all file elements
+	HMAC_key []byte //hmac key to generate hmac tags for each file elem
+	NumFiles int    //number of appends
+}
+
+type FileElem struct {
+	FileID   uuid.UUID // generate from fileKey UUID
+	Filedata []byte
+	File_ind int //1-indexed, represents number of file in file contents
+}
+
 // InitUser will be called a single time to initialize a new user.
 func InitUser(username string, password string) (userdataptr *User, err error) {
 	var userdata User
@@ -156,8 +157,11 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	userdata.UUID_ = uuid
 
 	//generate private signing key
+	var public_RSAKey userlib.PKEEncKey
 	userdata.PrivSignKey, verify_key, _ = userlib.DSKeyGen()
-	userlib.KeystoreSet(username, verify_key) // store public RSA key in KeyStore
+	public_RSAKey, userdata.PrivRSAKey, _ = userlib.PKEKeyGen()
+	userlib.KeystoreSet(username+"public_key", public_RSAKey) //store public key in store
+	userlib.KeystoreSet(username+"ds", verify_key)            // store public signature in store
 	//generate private encryption key
 	enc_pw := append(pw_hash, []byte("encryption")...)
 	userdata.EncKey = userlib.Argon2Key(enc_pw, []byte(username), 16)
@@ -424,6 +428,13 @@ func (userdata *User) LoadFile(filename string) (dataBytes []byte, err error) {
 			return nil, errors.New(error_msg)
 		}
 
+		//check integrity through HMAC
+		fileMAC, _ := userlib.HMACEval(fileKey.HMAC_key, file_enc[:len_file])
+		if !userlib.HMACEqual(fileMAC, file_enc[len_file:]) {
+			error_msg := "File part has been compromised: " + keyMsg
+			return nil, errors.New(error_msg)
+		}
+
 		//decrypt, depad, demarshal, and extract data field
 		file_dec := userlib.SymDec(latestFileKey.Enc_key, file_enc[:len_file])
 		file_dec = PKCS(file_dec, "remove")
@@ -443,12 +454,57 @@ func (userdata *User) LoadFile(filename string) (dataBytes []byte, err error) {
 	return dataBytes, nil
 }
 
+//Helper struct for ShareFile. The record users send to DataStore when securely sharing a file
+type ShareInvite struct {
+	Signature  userlib.DSSignKey
+	RSAFileKey []byte
+}
+
+//Helper struct for Sharefile. Stores necessart info necessary to get FileKey from datastore and decrypt
+type FileKeyMeta struct {
+	DSid    uuid.UUID
+	HMACkey []byte
+	ENCkey  []byte
+}
+
 // ShareFile is documented at:
 // https://cs161.org/assets/projects/2/docs/client_api/sharefile.html
+//Return UUID storage key at which the secure file share invitation is stored in Datastore
+//ERROR: given file does not exist in callers personal file space or
+//sharing cannot complete due to malicious action
 func (userdata *User) ShareFile(filename string, recipient string) (
 	accessToken uuid.UUID, err error) {
+	var shareInvite ShareInvite
+	var fileKeyMeta FileKeyMeta
+	//check is file exists in users file space
+	fk, fileFound := userdata.Filespace[filename]
 
-	return
+	if !fileFound {
+		return uuid.Nil, errors.New("File does not exist in caller's personal filespace.")
+	}
+	//check if recipient exists
+	pubKey, userFound := userlib.KeystoreGet(recipient + "public_key")
+	if !userFound {
+		return uuid.Nil, errors.New("Recepient not found.")
+	}
+
+	//populate Shareinvite and FileKeyMeta struct
+	shareInvite.Signature = userdata.PrivSignKey
+	fileKeyMeta.DSid = fk.KeyId
+	fileKeyMeta.HMACkey = fk.HMAC_key
+	fileKeyMeta.ENCkey = fk.Enc_key
+
+	fkm_json, _ := json.Marshal(fileKeyMeta)
+
+	//encrypt FileKeyMeta using RSA
+	fileKeyMeta_enc, _ := userlib.PKEEnc(pubKey, fkm_json) //dont need to pad?
+	shareInvite.RSAFileKey = fileKeyMeta_enc
+	shareInvite_json, _ := json.Marshal(shareInvite)
+
+	accessToken = uuid.New() //generate random accessToken
+	userlib.DatastoreSet(accessToken, shareInvite_json)
+
+	return accessToken, nil
 }
 
 // ReceiveFile is documented at:
