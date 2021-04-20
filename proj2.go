@@ -255,13 +255,13 @@ func GetLatestUser(uuid uuid.UUID, pw_hash []byte, hmac_key []byte, decKey []byt
 
 	user_json, _ := userlib.DatastoreGet(uuid) //retrieve the marshaled user info
 	//just need to check integrity of user struct
-	if len(user_json) < userlib.HashSizeBytes {
-		//automatically return error, file has been changed
-		return nil, errors.New("User data length has changed.")
-	}
 	len_data := len(user_json) - userlib.HashSizeBytes
 	just_user := user_json[:len_data] //remove HMAC for later use
 	mac := user_json[len_data:]
+	if len(just_user) < userlib.HashSizeBytes {
+		//automatically return error, file has been changed
+		return nil, errors.New("User data length has changed.")
+	}
 
 	//compute mac to set equal
 	correct_mac, _ := userlib.HMACEval(hmac_key, just_user)
@@ -375,6 +375,11 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 		return errors.New("File does not exist")
 	}
 
+	if len(fileKeyDS[:len_data]) < userlib.HashSizeBytes {
+		//automatically return error, file has been changed
+		return errors.New("File key data length has changed.")
+	}
+
 	//need to check that the fileKey struct hasnt been corrupted, but not the last file
 	//dont need to decrypt to do this
 	computedMac, _ := userlib.HMACEval(fk.HMAC_key, fileKeyDS[:len_data])
@@ -455,13 +460,13 @@ func (userdata *User) LoadFile(filename string) (dataBytes []byte, err error) {
 	}
 
 	len_data := len(fileKeyDS) - userlib.HashSizeBytes
-
-	//verify integrity of both fileKey struct and the file itself
-	computedMac, _ := userlib.HMACEval(fileKey.HMAC_key, fileKeyDS[:len_data])
 	if len(fileKeyDS[:len_data]) < userlib.HashSizeBytes {
 		//automatically return error, file has been changed
 		return nil, errors.New("FileKey data length has changed.")
 	}
+
+	//verify integrity of both fileKey struct and the file itself
+	computedMac, _ := userlib.HMACEval(fileKey.HMAC_key, fileKeyDS[:len_data])
 	if !userlib.HMACEqual(computedMac, fileKeyDS[len_data:]) {
 		return nil, errors.New("File key struct has been tampered with in Datastore.")
 	}
@@ -642,6 +647,10 @@ func (userdata *User) ReceiveFile(filename string, sender string,
 
 	//authenticate HMAC, decrypt, depad, demarshal fileKey and add to users filespace
 	len_fk := len(fileKey) - userlib.HashSizeBytes
+	if len(fileKey[:len_fk]) < userlib.HashSizeBytes {
+		//automatically return error, file has been changed
+		return errors.New("File key data length has changed.")
+	}
 
 	computedMac, _ := userlib.HMACEval(rsaFK.HMACkey, fileKey[:len_fk])
 	if !userlib.HMACEqual(computedMac, fileKey[len_fk:]) {
