@@ -50,11 +50,24 @@ func TestInit(t *testing.T) {
 	}
 	t.Log("Successfully handled duplicate user.")
 
+	_, err = InitUser("", "password")
+	if err == nil {
+		t.Error("Failed to handle empty username")
+		return
+	}
+	t.Log("Successfully handled empty username.")
+
+	_, err = InitUser("username", "")
+	if err == nil {
+		t.Error("Failed to handle empty password")
+		return
+	}
+	t.Log("Successfully handled empty password.")
 }
 
 func TestGetUser(t *testing.T) {
 	clear()
-	t.Log("GetUser Test")
+	t.Log("GetUser test")
 
 	u, err := InitUser("alice", "fubar")
 	if err != nil {
@@ -106,7 +119,50 @@ func TestGetUser(t *testing.T) {
 
 }
 
+func TestStoreLoad(t *testing.T) {
+	clear()
+	t.Log("Storing and loading test")
+
+	u, err := InitUser("alice", "fubar")
+	if err != nil {
+		t.Error("Failed to initialize user", err)
+		return
+	}
+
+	v := []byte("This is a test")
+	err = u.StoreFile("file1", v)
+	if err != nil {
+		t.Error("Failed to store file", err)
+		return
+	}
+	t.Log("Succesfully stored file.")
+
+	_, err = u.LoadFile("file")
+	if err == nil {
+		t.Error("Downloaded non-existing file", err)
+		return
+	}
+	t.Log("Succesfully countered non-existent file.")
+
+	f, err := u.LoadFile("file1")
+	if err != nil {
+		t.Error("Failed to load file", err)
+		return
+	}
+	t.Log("Succesfully loaded previously stored file.")
+
+	w := []byte("This is a different test")
+	err = u.StoreFile("file1", w)
+	f1, err := u.LoadFile("file1")
+	if err != nil || reflect.DeepEqual(f, f1) {
+		t.Error("Failed to overwrite previously stored file")
+		return
+	}
+	t.Log("Successfully overwritten previously stored file.")
+}
+
 func TestStorageAppend(t *testing.T) {
+	t.Log("Storage append test")
 	clear()
 	u, err := InitUser("alice", "fubar")
 	if err != nil {
@@ -138,6 +194,7 @@ func TestStorageAppend(t *testing.T) {
 		return
 	}
 	t.Log("Succesfully uploaded and downloaded file.")
+
 	if !reflect.DeepEqual(v, v2) {
 		t.Error("Downloaded file is not the same", v, v2)
 		return
@@ -159,6 +216,19 @@ func TestSingleUserAppend(t *testing.T) {
 
 	t.Log("Succesfully appended two files.")
 
+	f, err := u.LoadFile("file1")
+	if err != nil {
+		t.Error("Failed to load file after append")
+		return
+	}
+	t.Log("Succesfully loaded file after append.")
+
+	expected := []byte("File 1 data woohoo here is more yeet and even more!!")
+	if !reflect.DeepEqual(f, expected) {
+		t.Error("Appended file is not as expected")
+		return
+	}
+	t.Log("Success: appended file is as expected")
 }
 
 func TestInvalidFile(t *testing.T) {
