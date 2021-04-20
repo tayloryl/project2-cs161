@@ -460,7 +460,8 @@ func (userdata *User) LoadFile(filename string) (dataBytes []byte, err error) {
 	}
 
 	len_data := len(fileKeyDS) - userlib.HashSizeBytes
-	if len(fileKeyDS[:len_data]) < userlib.HashSizeBytes {
+	//fix ag panic
+	if len_data < 0 || len_data > len(fileKeyDS) || len(fileKeyDS[:len_data]) < userlib.HashSizeBytes {
 		//automatically return error, file has been changed
 		return nil, errors.New("FileKey data length has changed.")
 	}
@@ -496,7 +497,8 @@ func (userdata *User) LoadFile(filename string) (dataBytes []byte, err error) {
 			return nil, errors.New(error_msg)
 		}
 
-		if len(file_enc[:len_file]) < userlib.HashSizeBytes {
+		//fix ag out of bounds error
+		if len_file < 0 || len_file > len(file_enc) || len(file_enc[:len_file]) < userlib.HashSizeBytes {
 			//automatically return error, file has been changed
 			return nil, errors.New("File data length has changed.")
 		}
