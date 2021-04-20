@@ -458,6 +458,10 @@ func (userdata *User) LoadFile(filename string) (dataBytes []byte, err error) {
 
 	//verify integrity of both fileKey struct and the file itself
 	computedMac, _ := userlib.HMACEval(fileKey.HMAC_key, fileKeyDS[:len_data])
+	if len(fileKeyDS[:len_data]) < userlib.HashSizeBytes {
+		//automatically return error, file has been changed
+		return nil, errors.New("FileKey data length has changed.")
+	}
 	if !userlib.HMACEqual(computedMac, fileKeyDS[len_data:]) {
 		return nil, errors.New("File key struct has been tampered with in Datastore.")
 	}
@@ -485,6 +489,11 @@ func (userdata *User) LoadFile(filename string) (dataBytes []byte, err error) {
 		if !err {
 			error_msg := "File part not found: " + keyMsg
 			return nil, errors.New(error_msg)
+		}
+
+		if len(file_enc[:len_file]) < userlib.HashSizeBytes {
+			//automatically return error, file has been changed
+			return nil, errors.New("File data length has changed.")
 		}
 
 		//check integrity through HMAC
