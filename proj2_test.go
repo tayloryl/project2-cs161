@@ -92,18 +92,6 @@ func TestGetUser(t *testing.T) {
 	t.Log("Succesfully retrieved correct user data.")
 
 	//Datastore tampering: lets change Alice's user struct
-	_ = userlib.DatastoreGetMap()
-	//cant assume staff user struct has certain fields
-	/*
-		dataStore[u.UUID_] = []byte("Changed Alice's user profile!")
-		_, err = GetUser("alice", "fubar")
-		if err == nil {
-			t.Error("Validated an invalid login attempt: tampered user data.")
-			return
-		}
-		t.Log("Succesfully preserved integrity of user data.")
-	*/
-
 }
 
 func TestStoreLoad(t *testing.T) {
@@ -131,23 +119,22 @@ func TestStoreLoad(t *testing.T) {
 	}
 	t.Log("Succesfully countered non-existent file.")
 
-	_, err = u.LoadFile("file1")
+	f, err := u.LoadFile("file1")
 	if err != nil {
 		t.Error("Failed to load file", err)
 		return
 	}
 	t.Log("Succesfully loaded previously stored file.")
 
-	/*
-		w := []byte("This is a different test")
-		err = u.StoreFile("file1", w)
-		f1, err := u.LoadFile("file1")
-		if err != nil || reflect.DeepEqual(f, f1) {
-			t.Error("Failed to overwrite previously stored file")
-			return
-		}
-		t.Log("Successfully overwritten previously stored file.")
-	*/
+	w := []byte("This is a different test")
+	err = u.StoreFile("file1", w)
+	f1, err := u.LoadFile("file1")
+	if err != nil || reflect.DeepEqual(f, f1) {
+		t.Error("Failed to overwrite previously stored file")
+		return
+	}
+	t.Log("Successfully overwritten previously stored file.")
+
 }
 
 func TestStorageAppend(t *testing.T) {

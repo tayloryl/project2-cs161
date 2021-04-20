@@ -304,7 +304,7 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 
 	fileKey, exists := updatedUser.Filespace[filename]
 	if !exists {
-		//create new file
+		//create new fileKey
 		//creating the UUID for the FileKey
 		storageKey := userlib.RandomBytes(16)
 		fileKey.KeyId, _ = uuid.FromBytes(storageKey)
@@ -313,46 +313,75 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 		fileKey.Enc_key = enc_key[:16]
 		hmac_key, _ := userlib.HashKDF(storageKey, []byte("mac"))
 		fileKey.HMAC_key = hmac_key[:16]
-		fileKey.NumFiles = 1
 
 		//add to users file space
 		updatedUser.Filespace[filename] = fileKey
+	} else { //overwrite file - shared users can overwrite this file
+		//retrieve fileKey and delete any appended files from datastore if they exist
+		currFileKey, _ := userlib.DatastoreGet(fileKey.KeyId)
+		len_data := len(currFileKey) - userlib.HashSizeBytes
 
-		//now generate first file element
-		fileElem.File_ind = 1
-		//had to change key_msg (dont include filename since when sharing, other users can rename it)
-		key_msg := fileKey.KeyId.String() + "_" + strconv.Itoa(fileElem.File_ind)
-		key_bytes, _ := userlib.HMACEval(fileKey.HMAC_key, []byte(key_msg))
-		fileElem.FileID, _ = uuid.FromBytes(key_bytes[:16]) //new file ID based on file index and original fileKey
-		fileElem.Filedata = data
-		//userlib.DebugMsg("%v\n", fileElem.FileID)
+		if len_data < 0 || len_data > len(currFileKey) || len(currFileKey[:len_data]) < userlib.HashSizeBytes {
+			//automatically return error, file has been changed
+			return errors.New("FileKey data length has changed.")
+		}
+		//verify integrity of both fileKey struct and the file itself
+		computedMac, _ := userlib.HMACEval(fileKey.HMAC_key, currFileKey[:len_data])
+		if !userlib.HMACEqual(computedMac, currFileKey[len_data:]) {
+			return errors.New("File key struct has been tampered with in Datastore.")
+		}
+		//decrypt + depad fileKey from DS to current fileKey var (overwrite)
+		decrypt := userlib.SymDec(fileKey.Enc_key, currFileKey[:len_data])
+		decrypt = PKCS(decrypt, "remove")
+		var thisFileKey FileKey
+		err = json.Unmarshal(decrypt, &thisFileKey)
+		if err != nil {
+			return errors.New("Error demarshaling.")
+		}
 
-		//now encrypt the FileKey, FileElem, and userData add HMACs, and send to datastore
-		fk_marshal, _ := json.Marshal(fileKey)
-		fe_marshal, _ := json.Marshal(fileElem)
-		user_marshal, _ := json.Marshal(updatedUser)
-
-		fk_IV := userlib.RandomBytes(userlib.AESBlockSizeBytes) //if IV isnt random, not secure
-		fe_IV := userlib.RandomBytes(userlib.AESBlockSizeBytes)
-		user_IV := userlib.RandomBytes(userlib.AESBlockSizeBytes) //random IV each time
-
-		enc_fileKey := userlib.SymEnc(fileKey.Enc_key, fk_IV, PKCS(fk_marshal, "add"))
-		enc_fileElem := userlib.SymEnc(fileKey.Enc_key, fe_IV, PKCS(fe_marshal, "add"))
-		enc_user := userlib.SymEnc(updatedUser.EncKey, user_IV, PKCS(user_marshal, "add"))
-		fk_hmac, _ := userlib.HMACEval(fileKey.HMAC_key, enc_fileKey)
-		fe_hmac, _ := userlib.HMACEval(fileKey.HMAC_key, enc_fileElem)
-		user_hmac, _ := userlib.HMACEval(userdata.HMACKey, enc_user)
-
-		enc_fileKey = append(enc_fileKey, fk_hmac...)
-		enc_fileElem = append(enc_fileElem, fe_hmac...)
-		enc_user = append(enc_user, user_hmac...)
-		userlib.DatastoreSet(fileKey.KeyId, enc_fileKey)
-		userlib.DatastoreSet(fileElem.FileID, enc_fileElem)
-		userlib.DatastoreSet(userdata.UUID_, enc_user)
-
-	} else {
-
+		//delete appended files from key store
+		for i := 1; i <= thisFileKey.NumFiles; i++ {
+			//retrieve appropriate fileElem from Datastore, generate correct file ID
+			keyMsg := thisFileKey.KeyId.String() + "_" + strconv.Itoa(i) //i is index of file
+			key_bytes, _ := userlib.HMACEval(thisFileKey.HMAC_key, []byte(keyMsg))
+			fileID, _ := uuid.FromBytes(key_bytes[:16])
+			//deletes entry if it exists
+			userlib.DatastoreDelete(fileID)
+		}
+		//generate new fileElem to send to datastore and update fileKey accordingly
 	}
+	//if overwrite, numFiles goes back to 1
+	fileKey.NumFiles = 1
+	fileElem.File_ind = 1
+	//generates a new FileElem for overwrite as well
+	key_msg := fileKey.KeyId.String() + "_" + strconv.Itoa(fileElem.File_ind)
+	key_bytes, _ := userlib.HMACEval(fileKey.HMAC_key, []byte(key_msg))
+	fileElem.FileID, _ = uuid.FromBytes(key_bytes[:16]) //new file ID based on file index and original fileKey
+	fileElem.Filedata = data
+
+	//now encrypt the FileKey, FileElem, and userData add HMACs, and send to datastore
+	fk_marshal, _ := json.Marshal(fileKey)
+	fe_marshal, _ := json.Marshal(fileElem)
+	user_marshal, _ := json.Marshal(updatedUser)
+
+	fk_IV := userlib.RandomBytes(userlib.AESBlockSizeBytes) //if IV isnt random, not secure
+	fe_IV := userlib.RandomBytes(userlib.AESBlockSizeBytes)
+	user_IV := userlib.RandomBytes(userlib.AESBlockSizeBytes) //random IV each time
+
+	enc_fileKey := userlib.SymEnc(fileKey.Enc_key, fk_IV, PKCS(fk_marshal, "add"))
+	enc_fileElem := userlib.SymEnc(fileKey.Enc_key, fe_IV, PKCS(fe_marshal, "add"))
+	enc_user := userlib.SymEnc(updatedUser.EncKey, user_IV, PKCS(user_marshal, "add"))
+	fk_hmac, _ := userlib.HMACEval(fileKey.HMAC_key, enc_fileKey)
+	fe_hmac, _ := userlib.HMACEval(fileKey.HMAC_key, enc_fileElem)
+	user_hmac, _ := userlib.HMACEval(userdata.HMACKey, enc_user)
+
+	enc_fileKey = append(enc_fileKey, fk_hmac...)
+	enc_fileElem = append(enc_fileElem, fe_hmac...)
+	enc_user = append(enc_user, user_hmac...)
+	//Set can overwrite current data!
+	userlib.DatastoreSet(fileKey.KeyId, enc_fileKey)
+	userlib.DatastoreSet(fileElem.FileID, enc_fileElem)
+	userlib.DatastoreSet(userdata.UUID_, enc_user)
 
 	return
 }
@@ -684,6 +713,10 @@ func (userdata *User) ReceiveFile(filename string, sender string,
 
 // RevokeFile is documented at: ONLY OWNER REVOKES
 // https://cs161.org/assets/projects/2/docs/client_api/revokefile.html
+// Can only revoke access on users that they've DIRECTLY shared with
+// should revoke even if recipient has not called ReceiveFile()
 func (userdata *User) RevokeFile(filename string, targetUsername string) (err error) {
+	//return error if not in personal filespace
+
 	return
 }
