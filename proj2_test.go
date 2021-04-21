@@ -352,3 +352,111 @@ func TestExample2(t *testing.T) {
 	}
 	// f1 should be the same as f2
 }
+
+/*func TestExample3(t *testing.T) {
+	clear()
+	u1, _ := GetUser("user_alice", "pw1")
+	u2, _ := InitUser("user_bob", "pw2")
+	accessToken, err := u1.ShareFile("file", "user_bob")
+	if err != nil {
+		t.Error("Share file failed")
+		return
+	}
+
+	u2.ReceiveFile("file_from_alice", "user_alice", accessToken)
+
+	u1, _ = GetUser("user_alice", "pw1")
+	err = u1.RevokeFile("file", "user_bob")
+	if err != nil {
+		t.Error("Revoke file failed")
+	}
+
+	file_data, err := u1.LoadFile("file")
+	if err != nil {
+		t.Error("Load file failed for valid user")
+	}
+
+	new_file_data := []byte("new file data")
+	u1.StoreFile("file", new_file_data)
+
+	if reflect.DeepEqual(file_data, new_file_data) {
+		t.Error("Alice did not store file correctly.")
+	}
+
+}
+*/
+
+func TestPublicRevoke(t *testing.T) {
+	clear()
+	file1data := "File 1 data woohoo"
+	otherAppend := " Other append to file"
+	rogueAppend := " Rogue append to file"
+
+	creator, _ := InitUser("nick", "weaver")
+	revoked, _ := InitUser("paul", "legler")
+	non_revoked, _ := InitUser("evan", "bot")
+
+	creator.StoreFile("file1", []byte(file1data))
+
+	token1, err := creator.ShareFile("file1", "paul")
+	if err != nil {
+		t.Error("Share file failed", err)
+		return
+	}
+	revoked.ReceiveFile("file2", "nick", token1)
+
+	token2, err := creator.ShareFile("file1", "evan")
+	if err != nil {
+		t.Error("Second share file failed", err)
+		return
+	}
+
+	non_revoked.ReceiveFile("file3", "nick", token2)
+
+	err = creator.RevokeFile("file1", "paul")
+	if err != nil {
+		t.Error("Revoking failed", err)
+		return
+	}
+
+	creator.AppendFile("file1", []byte(otherAppend))
+
+	/* check for error post revoking (this should fail or return old data) */
+	_, err = revoked.LoadFile("file2")
+	if err == nil {
+		t.Error("Should have errored")
+		return
+	}
+
+	/* check non-revoked child can see update (should succeed) */
+	data, err := non_revoked.LoadFile("file3")
+	if err != nil {
+		t.Error("Non revoked error couldnt load file", err)
+		return
+	}
+
+	if reflect.DeepEqual(data, file1data) {
+		t.Error("File was not updated for non revoked user.")
+		return
+	}
+
+	/* check revoker (creator) load post revoking (should succeed) */
+	data_same, err := creator.LoadFile("file1")
+	if err != nil {
+		t.Error("Creator could not load file post revoking.", err)
+	}
+
+	/* revoked user trying to append to file */
+	err = revoked.AppendFile("file2", []byte(rogueAppend))
+	if err == nil {
+		t.Error("Revoked user was allowed to append to file!", err)
+		return
+	}
+
+	/* checking revoker can't observe revoked user's append */
+	data2, err := creator.LoadFile("file1")
+	if !reflect.DeepEqual(data2, data_same) {
+		t.Error("Revoker saw revoked user's append.", err)
+	}
+
+}

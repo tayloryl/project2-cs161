@@ -580,7 +580,7 @@ func (userdata *User) LoadFile(filename string) (dataBytes []byte, err error) {
 		}
 
 		//check integrity through HMAC
-		fileMAC, _ := userlib.HMACEval(fileKey.HMAC_key, file_enc[:len_file])
+		fileMAC, _ := userlib.HMACEval(latestFileKey.HMAC_key, file_enc[:len_file])
 		if !userlib.HMACEqual(fileMAC, file_enc[len_file:]) {
 			error_msg := "File part has been compromised: " + keyMsg
 			return nil, errors.New(error_msg)
@@ -732,11 +732,11 @@ func (userdata *User) ShareFile(filename string, recipient string) (
 		fk.SharedUsers[originalSharer] = list //add the recipient of this indirect user to list
 	}
 	//Now lets send the updated fileKey to the Datastore
-	fileKey_json, _ := json.Marshal(fileKey)
+	fileKey_json, _ := json.Marshal(fk)
 	fk_IV := userlib.RandomBytes(userlib.AESBlockSizeBytes)
-	fileKey_enc := userlib.SymEnc(fileKey.Enc_key, fk_IV, PKCS(fileKey_json, "add"))
+	fileKey_enc := userlib.SymEnc(fk.Enc_key, fk_IV, PKCS(fileKey_json, "add"))
 	//Add HMACs for both file key and file elem struct (runtime corresponds to size of appended file, nothing else)
-	fk_hmac, _ := userlib.HMACEval(fileKey.HMAC_key, fileKey_enc)
+	fk_hmac, _ := userlib.HMACEval(fk.HMAC_key, fileKey_enc)
 	fileKey_enc = append(fileKey_enc, fk_hmac...)
 	userlib.DatastoreSet(fileKey.KeyId, fileKey_enc)
 
@@ -958,6 +958,7 @@ func (userdata *User) RevokeFile(filename string, targetUsername string) (err er
 
 	//check if file is shared with target user
 	revoked, shared := fk.SharedUsers[targetUsername]
+	//userlib.DebugMsg("%v/n", fk.SharedUsers)
 	if !shared {
 		return errors.New("File not shared with target user")
 	}
@@ -1029,6 +1030,7 @@ func (userdata *User) RevokeFile(filename string, targetUsername string) (err er
 		if error != nil {
 			return errors.New("error unmarshaling file part")
 		}
+
 		key_bytesNew, _ := userlib.HMACEval(fk.HMAC_key, []byte(keyMsg))
 		fileIDnew, _ := uuid.FromBytes(key_bytesNew[:16])
 		file_unmarsh.FileID = fileIDnew
@@ -1054,8 +1056,8 @@ func (userdata *User) RevokeFile(filename string, targetUsername string) (err er
 	userlib.DatastoreSet(fk.KeyId, fileKey_enc)
 
 	//encrypt updated userdata and send to datastore
-	userdata.FilesOwned[filename] = fk
-	userdata.Filespace[filename] = fk
+	updatedUser.FilesOwned[filename] = fk
+	updatedUser.Filespace[filename] = fk
 	user_marshal, _ := json.Marshal(updatedUser)
 	user_IV := userlib.RandomBytes(userlib.AESBlockSizeBytes) //random IV each time
 	enc_user := userlib.SymEnc(updatedUser.EncKey, user_IV, PKCS(user_marshal, "add"))
