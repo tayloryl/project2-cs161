@@ -350,14 +350,17 @@ func TestExample2(t *testing.T) {
 		t.Error("f1 and f2 are not the same")
 		return
 	}
-	// f1 should be the same as f2
 }
 
-/*func TestExample3(t *testing.T) {
+func TestExample3(t *testing.T) {
+	//try multiple sessions?
 	clear()
-	u1, _ := GetUser("user_alice", "pw1")
+	u1, _ := InitUser("user_alice", "pw1")
 	u2, _ := InitUser("user_bob", "pw2")
+	u1.StoreFile("file", []byte("This is a file"))
+
 	accessToken, err := u1.ShareFile("file", "user_bob")
+
 	if err != nil {
 		t.Error("Share file failed")
 		return
@@ -365,7 +368,6 @@ func TestExample2(t *testing.T) {
 
 	u2.ReceiveFile("file_from_alice", "user_alice", accessToken)
 
-	u1, _ = GetUser("user_alice", "pw1")
 	err = u1.RevokeFile("file", "user_bob")
 	if err != nil {
 		t.Error("Revoke file failed")
@@ -384,7 +386,6 @@ func TestExample2(t *testing.T) {
 	}
 
 }
-*/
 
 func TestPublicRevoke(t *testing.T) {
 	clear()
