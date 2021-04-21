@@ -892,7 +892,7 @@ func (userdata *User) RetrieveAccessToken(accessToken uuid.UUID) (fileKeyData Fi
 
 	//authenticate HMAC, decrypt, depad, demarshal fileKey and add to users filespace
 	len_fk := len(fileKey) - userlib.HashSizeBytes
-	if len(fileKey[:len_fk]) < userlib.HashSizeBytes {
+	if len_fk < 0 || len_fk > len(fileKey) || len(fileKey[:len_fk]) < userlib.HashSizeBytes {
 		//automatically return error, file has been changed
 		return fileKeyNil, errors.New("File key data length has changed.")
 	}
