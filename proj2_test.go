@@ -435,6 +435,24 @@ func TestPublicRevoke(t *testing.T) {
 		t.Error("Non revoked error couldnt load file", err)
 		return
 	}
+	//NON REVOKED USER OVERWRITES
+
+	non_revoked.StoreFile("file3", []byte("overwrite after revocation"))
+	file3evan, err := non_revoked.LoadFile("file3")
+	if err != nil {
+		t.Error("Error loading file after non revoked user overwrote")
+	}
+	file3idk, err := creator.LoadFile("file1")
+
+	if err != nil {
+		t.Error("Error for creator loading file after non revoked user overwrote", err)
+		return
+	}
+
+	if !reflect.DeepEqual(file3idk, file3evan) {
+		t.Error("Overwrite was not a success - creator cant see non-revoked user edits", err)
+		return
+	}
 
 	if reflect.DeepEqual(data, file1data) {
 		t.Error("File was not updated for non revoked user.")
@@ -459,5 +477,7 @@ func TestPublicRevoke(t *testing.T) {
 	if !reflect.DeepEqual(data2, data_same) {
 		t.Error("Revoker saw revoked user's append.", err)
 	}
+
+	//test more on shared users taking action after revocation
 
 }
